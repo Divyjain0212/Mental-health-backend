@@ -113,6 +113,7 @@ export default async function handler(req, res) {
           'GET /',
           'GET /api',
           'GET /api/health',
+          'POST /api/auth/register',
           'POST /api/auth/login',
           'GET /api/auth/profile'
         ]
@@ -131,6 +132,57 @@ export default async function handler(req, res) {
           nodeEnv: process.env.NODE_ENV
         }
       });
+    }
+    
+    // Auth register endpoint
+    if (url === '/api/auth/register' && method === 'POST') {
+      if (!isConnected || !User) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const body = await parseBody(req);
+      const { email, password, role = 'student', name } = body;
+      
+      if (!email || !password) {
+        return res.status(400).json({ message: 'Email and password are required' });
+      }
+      
+      try {
+        // Check if user already exists
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+          return res.status(400).json({ message: 'User already exists' });
+        }
+        
+        // Create new user
+        const newUser = new User({
+          email,
+          password,
+          role,
+          name
+        });
+        
+        await newUser.save();
+        
+        // Generate JWT token
+        const token = jwt.sign(
+          { userId: newUser._id, email: newUser.email, role: newUser.role },
+          process.env.JWT_SECRET || 'fallback-secret',
+          { expiresIn: '7d' }
+        );
+        
+        return res.status(201).json({
+          token,
+          _id: newUser._id,
+          email: newUser.email,
+          role: newUser.role,
+          name: newUser.name
+        });
+        
+      } catch (error) {
+        console.error('Register error:', error);
+        return res.status(500).json({ message: 'Server error during registration' });
+      }
     }
     
     // Auth login endpoint
@@ -214,7 +266,7 @@ export default async function handler(req, res) {
       error: 'Not Found',
       url: url,
       message: 'Endpoint not found',
-      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/login', '/api/auth/profile']
+      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/register', '/api/auth/login', '/api/auth/profile']
     });
     
   } catch (error) {
