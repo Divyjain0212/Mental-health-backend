@@ -11,6 +11,26 @@ const UserSchema = new mongoose.Schema({
   name: { type: String }
 });
 
+// Mood Log Schema
+const MoodLogSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  mood: { type: String, required: true },
+  intensity: { type: Number, min: 1, max: 10, required: true },
+  note: { type: String },
+  timestamp: { type: Date, default: Date.now }
+});
+
+// Appointment Schema
+const AppointmentSchema = new mongoose.Schema({
+  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  counsellorId: { type: String, required: true }, // Using string for now since counsellors are mock data
+  counsellorName: { type: String, required: true },
+  date: { type: Date, required: true },
+  time: { type: String, required: true },
+  status: { type: String, enum: ['pending', 'confirmed', 'completed', 'cancelled'], default: 'pending' },
+  notes: { type: String }
+});
+
 // Hash password before saving
 UserSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
@@ -23,7 +43,7 @@ UserSchema.methods.comparePassword = async function(password) {
   return await bcrypt.compare(password, this.password);
 };
 
-let User;
+let User, MoodLog, Appointment;
 let isConnected = false;
 
 const connectToDatabase = async () => {
@@ -34,8 +54,10 @@ const connectToDatabase = async () => {
       console.log('Attempting MongoDB connection...');
       await mongoose.connect(process.env.MONGO_URI);
       
-      // Initialize User model
+      // Initialize models
       User = mongoose.models.User || mongoose.model('User', UserSchema);
+      MoodLog = mongoose.models.MoodLog || mongoose.model('MoodLog', MoodLogSchema);
+      Appointment = mongoose.models.Appointment || mongoose.model('Appointment', AppointmentSchema);
       
       isConnected = true;
       console.log('MongoDB Connected Successfully');
@@ -223,13 +245,71 @@ export default async function handler(req, res) {
       }
     }
     
-    // Simple mood log endpoint (mock data for now)
+    // Get mood history endpoint
     if (url === '/api/moods' && method === 'GET') {
-      return res.status(200).json([
-        { date: '2024-01-01', mood: 'happy', intensity: 7 },
-        { date: '2024-01-02', mood: 'stressed', intensity: 5 },
-        { date: '2024-01-03', mood: 'calm', intensity: 8 }
-      ]);
+      if (!isConnected || !MoodLog) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      // Get token from header
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        
+        const moods = await MoodLog.find({ userId: decoded.userId })
+          .sort({ timestamp: -1 })
+          .limit(30);
+        
+        return res.status(200).json(moods);
+        
+      } catch (error) {
+        console.error('Get moods error:', error);
+        return res.status(401).json({ message: 'Invalid token' });
+      }
+    }
+    
+    // Log mood endpoint
+    if (url === '/api/moods' && method === 'POST') {
+      if (!isConnected || !MoodLog) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        const body = await parseBody(req);
+        const { mood, intensity, note } = body;
+        
+        if (!mood || !intensity) {
+          return res.status(400).json({ message: 'Mood and intensity are required' });
+        }
+        
+        const moodLog = new MoodLog({
+          userId: decoded.userId,
+          mood,
+          intensity,
+          note
+        });
+        
+        await moodLog.save();
+        return res.status(201).json(moodLog);
+        
+      } catch (error) {
+        console.error('Log mood error:', error);
+        return res.status(401).json({ message: 'Invalid token' });
+      }
     }
     
     // Simple counsellors endpoint (mock data for now)
@@ -252,12 +332,80 @@ export default async function handler(req, res) {
       ]);
     }
     
+    // Book appointment endpoint
+    if (url === '/api/appointments' && method === 'POST') {
+      if (!isConnected || !Appointment) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        const body = await parseBody(req);
+        const { counsellorId, counsellorName, date, time, notes } = body;
+        
+        if (!counsellorId || !date || !time) {
+          return res.status(400).json({ message: 'Counsellor, date and time are required' });
+        }
+        
+        const appointment = new Appointment({
+          studentId: decoded.userId,
+          counsellorId,
+          counsellorName: counsellorName || 'Unknown Counsellor',
+          date: new Date(date),
+          time,
+          notes
+        });
+        
+        await appointment.save();
+        return res.status(201).json(appointment);
+        
+      } catch (error) {
+        console.error('Book appointment error:', error);
+        return res.status(500).json({ message: 'Server error during booking' });
+      }
+    }
+    
+    // Get appointments endpoint
+    if (url === '/api/appointments' && method === 'GET') {
+      if (!isConnected || !Appointment) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      // Get token from header
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        
+        const appointments = await Appointment.find({ studentId: decoded.userId })
+          .sort({ date: 1 });
+        
+        return res.status(200).json(appointments);
+        
+      } catch (error) {
+        console.error('Get appointments error:', error);
+        return res.status(401).json({ message: 'Invalid token' });
+      }
+    }
+    
     // 404 for other routes
     return res.status(404).json({
       error: 'Not Found',
       url: url,
       message: 'Endpoint not found',
-      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/login', '/api/auth/profile', '/api/moods', '/api/counsellors']
+      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/login', '/api/auth/profile', '/api/moods', '/api/counsellors', '/api/appointments']
     });
     
   } catch (error) {
