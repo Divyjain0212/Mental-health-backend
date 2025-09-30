@@ -1,92 +1,55 @@
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
+// Ultra-minimal serverless function for debugging
+const app = require('express')();
 
-const app = express();
+// Basic middleware
+app.use(require('cors')());
+app.use(require('express').json());
 
-// CORS configuration
-app.use(cors({
-  origin: true, // Allow all origins for now
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-app.use(express.json());
-
-// MongoDB connection
-let isConnected = false;
-
-const connectToDatabase = async () => {
-  if (isConnected) return;
-  
-  try {
-    if (process.env.MONGO_URI) {
-      await mongoose.connect(process.env.MONGO_URI, {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-      });
-      isConnected = true;
-      console.log('MongoDB Connected');
-    }
-  } catch (err) {
-    console.error('MongoDB connection error:', err);
-  }
-};
-
-// Health check endpoints
+// Root endpoint
 app.get('/', (req, res) => {
-  res.json({ 
-    message: 'Welcome to the MindCare Backend API!', 
-    status: 'Server is running correctly.',
-    timestamp: new Date().toISOString()
+  res.json({
+    message: 'MindCare Backend API - Working!',
+    status: 'success',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
   });
 });
 
+// API info endpoint
 app.get('/api', (req, res) => {
-  res.json({ 
-    message: 'MindCare API is running', 
-    version: '1.0.0',
-    endpoints: ['/api/auth', '/api/test']
+  res.json({
+    message: 'API is running',
+    endpoints: [
+      'GET /',
+      'GET /api',
+      'GET /api/health'
+    ],
+    status: 'success'
   });
 });
 
-app.get('/api/test', (req, res) => {
-  res.json({ 
-    message: 'Test endpoint working!',
-    timestamp: new Date().toISOString()
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    environment: {
+      node_version: process.version,
+      platform: process.platform,
+      memory: process.memoryUsage()
+    }
   });
 });
 
-// Load routes with proper error handling
-try {
-  // Auth routes
-  app.use('/api/auth', async (req, res, next) => {
-    await connectToDatabase();
-    next();
-  }, require('../routes/authRoutes'));
-
-  // Add other routes one by one after testing auth works
-  
-} catch (err) {
-  console.error('Error loading routes:', err);
-}
-
-// Error handling
-app.use((err, req, res, next) => {
-  console.error('Error:', err);
-  res.status(500).json({ 
-    error: 'Internal server error',
-    message: err.message 
-  });
-});
-
-// 404 handler
+// Catch all other routes
 app.use('*', (req, res) => {
-  res.status(404).json({ 
-    error: 'Endpoint not found',
-    path: req.originalUrl 
+  res.status(404).json({
+    error: 'Not Found',
+    path: req.originalUrl,
+    message: 'This endpoint does not exist'
   });
 });
 
+// Export for Vercel
 module.exports = app;
