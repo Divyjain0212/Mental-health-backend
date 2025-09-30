@@ -2,16 +2,21 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 
-// Import routes
-const authRoutes = require('./routes/authRoutes');
-const chatRoutes = require('./routes/chatRoutes'); 
-const appointmentRoutes = require('./routes/appointmentRoutes');
-const counsellorRoutes = require('./routes/counsellorRoutes');
-const adminRoutes = require('./routes/adminRoutes');
-const alertRoutes = require('./routes/alertRoutes');
-const moodRoutes = require('./routes/moodRoutes');
-const voucherRoutes = require('./routes/voucherRoutes');
-const forumRoutes = require('./routes/forumRoutes');
+// Load environment variables for serverless
+if (!process.env.VERCEL) {
+  require('dotenv').config();
+}
+
+// Import routes - using correct paths for serverless
+const authRoutes = require('../routes/authRoutes');
+const chatRoutes = require('../routes/chatRoutes'); 
+const appointmentRoutes = require('../routes/appointmentRoutes');
+const counsellorRoutes = require('../routes/counsellorRoutes');
+const adminRoutes = require('../routes/adminRoutes');
+const alertRoutes = require('../routes/alertRoutes');
+const moodRoutes = require('../routes/moodRoutes');
+const voucherRoutes = require('../routes/voucherRoutes');
+const forumRoutes = require('../routes/forumRoutes');
 
 const app = express();
 
@@ -48,21 +53,36 @@ const connectToDatabase = async () => {
   if (isConnected) return;
   
   try {
+    if (!process.env.MONGO_URI) {
+      throw new Error('MONGO_URI environment variable is not set');
+    }
+    
     await mongoose.connect(process.env.MONGO_URI, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
+      serverSelectionTimeoutMS: 5000, // 5 second timeout
     });
     isConnected = true;
     console.log('MongoDB Connected...');
   } catch (err) {
     console.error('MongoDB connection error:', err);
+    isConnected = false;
+    throw err;
   }
 };
 
 // Middleware to ensure database connection
 app.use(async (req, res, next) => {
-  await connectToDatabase();
-  next();
+  try {
+    await connectToDatabase();
+    next();
+  } catch (err) {
+    console.error('Database connection failed:', err);
+    res.status(500).json({ 
+      error: 'Database connection failed', 
+      message: err.message 
+    });
+  }
 });
 
 // Health check endpoint
