@@ -1,5 +1,5 @@
-// Vercel serverless function - Pure Node.js approach
-module.exports = (req, res) => {
+// Vercel serverless function - correct export format
+export default function handler(req, res) {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -49,4 +49,4 @@ module.exports = (req, res) => {
       timestamp: new Date().toISOString()
     });
   }
-};
+}
