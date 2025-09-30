@@ -2,43 +2,11 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 
-// Load environment variables for serverless
-if (!process.env.VERCEL) {
-  require('dotenv').config();
-}
-
-// Import routes - using correct paths for serverless
-const authRoutes = require('../routes/authRoutes');
-const chatRoutes = require('../routes/chatRoutes'); 
-const appointmentRoutes = require('../routes/appointmentRoutes');
-const counsellorRoutes = require('../routes/counsellorRoutes');
-const adminRoutes = require('../routes/adminRoutes');
-const alertRoutes = require('../routes/alertRoutes');
-const moodRoutes = require('../routes/moodRoutes');
-const voucherRoutes = require('../routes/voucherRoutes');
-const forumRoutes = require('../routes/forumRoutes');
-
 const app = express();
 
-// CORS configuration for production
-const allowedOrigins = [
-  'http://localhost:3000',
-  'http://localhost:5173',
-  'https://your-frontend-deployment.vercel.app',
-  process.env.FRONTEND_URL
-].filter(Boolean);
-
+// CORS configuration
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: true, // Allow all origins for now
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -46,46 +14,27 @@ app.use(cors({
 
 app.use(express.json());
 
-// Connect to MongoDB (for serverless, we need to handle connection differently)
+// MongoDB connection
 let isConnected = false;
 
 const connectToDatabase = async () => {
   if (isConnected) return;
   
   try {
-    if (!process.env.MONGO_URI) {
-      throw new Error('MONGO_URI environment variable is not set');
+    if (process.env.MONGO_URI) {
+      await mongoose.connect(process.env.MONGO_URI, {
+        useNewUrlParser: true,
+        useUnifiedTopology: true,
+      });
+      isConnected = true;
+      console.log('MongoDB Connected');
     }
-    
-    await mongoose.connect(process.env.MONGO_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      serverSelectionTimeoutMS: 5000, // 5 second timeout
-    });
-    isConnected = true;
-    console.log('MongoDB Connected...');
   } catch (err) {
     console.error('MongoDB connection error:', err);
-    isConnected = false;
-    throw err;
   }
 };
 
-// Middleware to ensure database connection
-app.use(async (req, res, next) => {
-  try {
-    await connectToDatabase();
-    next();
-  } catch (err) {
-    console.error('Database connection failed:', err);
-    res.status(500).json({ 
-      error: 'Database connection failed', 
-      message: err.message 
-    });
-  }
-});
-
-// Health check endpoint
+// Health check endpoints
 app.get('/', (req, res) => {
   res.json({ 
     message: 'Welcome to the MindCare Backend API!', 
@@ -98,43 +47,46 @@ app.get('/api', (req, res) => {
   res.json({ 
     message: 'MindCare API is running', 
     version: '1.0.0',
-    endpoints: [
-      '/api/auth',
-      '/api/chat',
-      '/api/appointments',
-      '/api/counsellors',
-      '/api/admin',
-      '/api/alerts',
-      '/api/moods',
-      '/api/vouchers',
-      '/api/forum'
-    ]
+    endpoints: ['/api/auth', '/api/test']
   });
 });
 
-// API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/chat', chatRoutes);
-app.use('/api/appointments', appointmentRoutes);
-app.use('/api/counsellors', counsellorRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/alerts', alertRoutes);
-app.use('/api/moods', moodRoutes);
-app.use('/api/vouchers', voucherRoutes);
-app.use('/api/forum', forumRoutes);
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    message: 'Test endpoint working!',
+    timestamp: new Date().toISOString()
+  });
+});
 
-// Error handling middleware
+// Load routes with proper error handling
+try {
+  // Auth routes
+  app.use('/api/auth', async (req, res, next) => {
+    await connectToDatabase();
+    next();
+  }, require('../routes/authRoutes'));
+
+  // Add other routes one by one after testing auth works
+  
+} catch (err) {
+  console.error('Error loading routes:', err);
+}
+
+// Error handling
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error('Error:', err);
   res.status(500).json({ 
-    message: 'Something went wrong!', 
-    error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+    error: 'Internal server error',
+    message: err.message 
   });
 });
 
 // 404 handler
 app.use('*', (req, res) => {
-  res.status(404).json({ message: 'API endpoint not found' });
+  res.status(404).json({ 
+    error: 'Endpoint not found',
+    path: req.originalUrl 
+  });
 });
 
 module.exports = app;
