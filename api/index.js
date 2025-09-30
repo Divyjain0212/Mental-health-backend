@@ -1,6 +1,36 @@
-// Vercel serverless function with MongoDB and basic routes
+// Vercel serverless function with MongoDB and authentication
 import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
+// User Schema (inline for simplicity)
+const UserSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, enum: ['student', 'admin', 'counsellor'], default: 'student' },
+  name: { type: String },
+  campus: { type: String },
+  phone: { type: String },
+  languages: [String],
+  specialization: [String],
+  location: { type: String },
+  availableDays: [String],
+  availableHours: { type: String }
+});
+
+// Hash password before saving
+UserSchema.pre('save', async function(next) {
+  if (!this.isModified('password')) return next();
+  this.password = await bcrypt.hash(this.password, 12);
+  next();
+});
+
+// Password comparison method
+UserSchema.methods.comparePassword = async function(password) {
+  return await bcrypt.compare(password, this.password);
+};
+
+let User;
 let isConnected = false;
 
 const connectToDatabase = async () => {
@@ -12,12 +42,33 @@ const connectToDatabase = async () => {
         useNewUrlParser: true,
         useUnifiedTopology: true,
       });
+      
+      // Initialize User model
+      User = mongoose.models.User || mongoose.model('User', UserSchema);
+      
       isConnected = true;
       console.log('MongoDB Connected');
     }
   } catch (err) {
     console.error('MongoDB connection error:', err);
   }
+};
+
+// Helper function to parse JSON body
+const parseBody = (req) => {
+  return new Promise((resolve) => {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk.toString();
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        resolve({});
+      }
+    });
+  });
 };
 
 export default async function handler(req, res) {
@@ -82,13 +133,80 @@ export default async function handler(req, res) {
       });
     }
     
-    // Auth login endpoint (basic implementation)
+    // Auth login endpoint
     if (url === '/api/auth/login' && method === 'POST') {
-      return res.status(200).json({
-        message: 'Login endpoint working',
-        note: 'Full authentication will be added next',
-        timestamp: new Date().toISOString()
-      });
+      if (!isConnected || !User) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const body = await parseBody(req);
+      const { email, password } = body;
+      
+      if (!email || !password) {
+        return res.status(400).json({ message: 'Email and password are required' });
+      }
+      
+      try {
+        // Find user
+        const user = await User.findOne({ email }).select('+password');
+        
+        if (!user || !(await user.comparePassword(password))) {
+          return res.status(401).json({ message: 'Invalid email or password' });
+        }
+        
+        // Generate JWT token
+        const token = jwt.sign(
+          { userId: user._id, email: user.email, role: user.role },
+          process.env.JWT_SECRET || 'fallback-secret',
+          { expiresIn: '7d' }
+        );
+        
+        return res.status(200).json({
+          token,
+          _id: user._id,
+          email: user.email,
+          role: user.role,
+          name: user.name
+        });
+        
+      } catch (error) {
+        console.error('Login error:', error);
+        return res.status(500).json({ message: 'Server error during login' });
+      }
+    }
+    
+    // Auth profile endpoint
+    if (url === '/api/auth/profile' && method === 'GET') {
+      if (!isConnected || !User) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      // Get token from header
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        const user = await User.findById(decoded.userId);
+        
+        if (!user) {
+          return res.status(404).json({ message: 'User not found' });
+        }
+        
+        return res.status(200).json({
+          _id: user._id,
+          email: user.email,
+          role: user.role,
+          name: user.name
+        });
+        
+      } catch (error) {
+        return res.status(401).json({ message: 'Invalid token' });
+      }
     }
     
     // 404 for other routes
@@ -96,7 +214,7 @@ export default async function handler(req, res) {
       error: 'Not Found',
       url: url,
       message: 'Endpoint not found',
-      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/login']
+      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/login', '/api/auth/profile']
     });
     
   } catch (error) {
