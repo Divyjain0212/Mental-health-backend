@@ -630,11 +630,180 @@ export default async function handler(req, res) {
         
         await chat.save();
         
-        return res.status(201).json(chat);
+        return res.status(201).json({ reply: response });
         
       } catch (error) {
         console.error('Send chat message error:', error);
         return res.status(500).json({ message: 'Server error during chat' });
+      }
+    }
+    
+    // Get mood stats endpoint
+    if (url === '/api/moods/stats' && method === 'GET') {
+      if (!isConnected || !MoodLog) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        
+        // Get last 7 days of mood logs
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        
+        const moods = await MoodLog.find({ 
+          userId: decoded.userId,
+          timestamp: { $gte: sevenDaysAgo }
+        }).sort({ timestamp: -1 });
+        
+        // Generate proper 7-day history with all dates
+        const history7d = [];
+        const moodsByDate = {};
+        
+        // Group existing moods by date
+        moods.forEach(mood => {
+          const date = mood.timestamp.toISOString().split('T')[0];
+          if (!moodsByDate[date]) {
+            moodsByDate[date] = [];
+          }
+          moodsByDate[date].push(mood.intensity);
+        });
+        
+        // Generate last 7 days with data or default values
+        for (let i = 6; i >= 0; i--) {
+          const date = new Date();
+          date.setDate(date.getDate() - i);
+          const dateStr = date.toISOString().split('T')[0];
+          
+          let avgMood = 0;
+          if (moodsByDate[dateStr] && moodsByDate[dateStr].length > 0) {
+            // Calculate average mood for that day
+            avgMood = moodsByDate[dateStr].reduce((sum, mood) => sum + mood, 0) / moodsByDate[dateStr].length;
+          }
+          
+          history7d.push({
+            day: dateStr,
+            mood: Math.round(avgMood)
+          });
+        }
+        
+        const totalMoods = moods.length;
+        const averageMood = totalMoods > 0 ? moods.reduce((sum, m) => sum + m.intensity, 0) / totalMoods : 0;
+        
+        return res.status(200).json({
+          history7d,
+          points: totalMoods * 10, // 10 points per mood log
+          streakCount: Math.min(totalMoods, 7), // Simplified streak calculation
+          averageMood: Math.round(averageMood * 10) / 10
+        });
+        
+      } catch (error) {
+        console.error('Get mood stats error:', error);
+        return res.status(401).json({ message: 'Invalid token' });
+      }
+    }
+    
+    // Get user appointments endpoint
+    if (url === '/api/appointments/me' && method === 'GET') {
+      if (!isConnected || !Appointment) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        
+        const appointments = await Appointment.find({ studentId: decoded.userId })
+          .sort({ date: -1 });
+        
+        return res.status(200).json(appointments);
+        
+      } catch (error) {
+        console.error('Get appointments error:', error);
+        return res.status(401).json({ message: 'Invalid token' });
+      }
+    }
+    
+    // Update appointment status endpoint
+    if (url.startsWith('/api/appointments/') && url.includes('/status') && method === 'PUT') {
+      if (!isConnected || !Appointment) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        const appointmentId = url.split('/')[3]; // Extract ID from URL
+        const body = await parseBody(req);
+        const { status } = body;
+        
+        const appointment = await Appointment.findByIdAndUpdate(
+          appointmentId,
+          { status },
+          { new: true }
+        );
+        
+        if (!appointment) {
+          return res.status(404).json({ message: 'Appointment not found' });
+        }
+        
+        return res.status(200).json(appointment);
+        
+      } catch (error) {
+        console.error('Update appointment error:', error);
+        return res.status(500).json({ message: 'Server error' });
+      }
+    }
+    
+    // Create alert endpoint
+    if (url === '/api/alerts' && method === 'POST') {
+      if (!isConnected) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        const body = await parseBody(req);
+        
+        // Log the alert (simplified - in a real app you'd store this)
+        console.log('ALERT CREATED:', {
+          userId: decoded.userId,
+          message: body.message,
+          level: body.level,
+          timestamp: new Date().toISOString()
+        });
+        
+        return res.status(201).json({ message: 'Alert created successfully' });
+        
+      } catch (error) {
+        console.error('Create alert error:', error);
+        return res.status(500).json({ message: 'Server error' });
       }
     }
     
@@ -643,7 +812,22 @@ export default async function handler(req, res) {
       error: 'Not Found',
       url: url,
       message: 'Endpoint not found',
-      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/login', '/api/auth/profile', '/api/moods', '/api/counsellors', '/api/appointments', '/api/forum', '/api/chat']
+      availableEndpoints: [
+        '/', 
+        '/api', 
+        '/api/health', 
+        '/api/auth/login', 
+        '/api/auth/profile', 
+        '/api/moods', 
+        '/api/moods/stats',
+        '/api/counsellors', 
+        '/api/appointments', 
+        '/api/appointments/me',
+        '/api/appointments/:id/status',
+        '/api/forum', 
+        '/api/chat',
+        '/api/alerts'
+      ]
     });
     
   } catch (error) {
