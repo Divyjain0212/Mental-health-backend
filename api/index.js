@@ -49,6 +49,14 @@ const ForumPostSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
+// Chat Schema for AI Support
+const ChatSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  message: { type: String, required: true },
+  response: { type: String, required: true },
+  timestamp: { type: Date, default: Date.now }
+});
+
 // Hash password before saving
 UserSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
@@ -61,7 +69,7 @@ UserSchema.methods.comparePassword = async function(password) {
   return await bcrypt.compare(password, this.password);
 };
 
-let User, MoodLog, Appointment, ForumPost;
+let User, MoodLog, Appointment, ForumPost, Chat;
 let isConnected = false;
 
 const connectToDatabase = async () => {
@@ -77,6 +85,7 @@ const connectToDatabase = async () => {
       MoodLog = mongoose.models.MoodLog || mongoose.model('MoodLog', MoodLogSchema);
       Appointment = mongoose.models.Appointment || mongoose.model('Appointment', AppointmentSchema);
       ForumPost = mongoose.models.ForumPost || mongoose.model('ForumPost', ForumPostSchema);
+      Chat = mongoose.models.Chat || mongoose.model('Chat', ChatSchema);
       
       isConnected = true;
       console.log('MongoDB Connected Successfully');
@@ -311,6 +320,8 @@ export default async function handler(req, res) {
         const body = await parseBody(req);
         const { mood, intensity, note } = body;
         
+        console.log('Mood log request:', { mood, intensity, note, userId: decoded.userId });
+        
         if (!mood || !intensity) {
           return res.status(400).json({ message: 'Mood and intensity are required' });
         }
@@ -327,7 +338,11 @@ export default async function handler(req, res) {
         
       } catch (error) {
         console.error('Log mood error:', error);
-        return res.status(401).json({ message: 'Invalid token' });
+        return res.status(500).json({ 
+          message: 'Server error during mood logging',
+          error: error.message,
+          details: 'Please check if all required fields are provided'
+        });
       }
     }
     
@@ -369,6 +384,8 @@ export default async function handler(req, res) {
         const body = await parseBody(req);
         const { counsellorId, counsellorName, date, time, notes } = body;
         
+        console.log('Appointment booking request:', { counsellorId, counsellorName, date, time, notes, userId: decoded.userId });
+        
         if (!counsellorId || !date || !time) {
           return res.status(400).json({ message: 'Counsellor, date and time are required' });
         }
@@ -387,7 +404,11 @@ export default async function handler(req, res) {
         
       } catch (error) {
         console.error('Book appointment error:', error);
-        return res.status(500).json({ message: 'Server error during booking' });
+        return res.status(500).json({ 
+          message: 'Server error during booking',
+          error: error.message,
+          details: 'Please check if all required fields are provided'
+        });
       }
     }
     
@@ -529,12 +550,100 @@ export default async function handler(req, res) {
       }
     }
     
+    // Chat endpoints (AI Support)
+    
+    // Get chat history
+    if (url === '/api/chat' && method === 'GET') {
+      if (!isConnected || !Chat) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        
+        const chats = await Chat.find({ userId: decoded.userId })
+          .sort({ timestamp: 1 })
+          .limit(50);
+        
+        return res.status(200).json(chats);
+        
+      } catch (error) {
+        console.error('Get chat history error:', error);
+        return res.status(401).json({ message: 'Invalid token' });
+      }
+    }
+    
+    // Send chat message (AI Support)
+    if (url === '/api/chat' && method === 'POST') {
+      if (!isConnected || !Chat) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        const body = await parseBody(req);
+        const { message } = body;
+        
+        if (!message) {
+          return res.status(400).json({ message: 'Message is required' });
+        }
+        
+        // Simple AI response logic
+        let response = "I understand you're reaching out. ";
+        const lowerMessage = message.toLowerCase();
+        
+        if (lowerMessage.includes('anxiety') || lowerMessage.includes('anxious')) {
+          response += "Anxiety is very common among students. Here are some techniques that might help: Try deep breathing (4 counts in, hold for 4, out for 4), practice grounding techniques (name 5 things you can see, 4 you can hear, 3 you can touch), and remember that anxiety is temporary. Consider speaking with one of our campus counselors if these feelings persist.";
+        } else if (lowerMessage.includes('stress') || lowerMessage.includes('stressed')) {
+          response += "Stress management is crucial for your wellbeing. Try breaking large tasks into smaller ones, take regular breaks, practice mindfulness or meditation, maintain a regular sleep schedule, and don't hesitate to reach out for support. Our counselors can help you develop personalized stress management strategies.";
+        } else if (lowerMessage.includes('depression') || lowerMessage.includes('sad') || lowerMessage.includes('down')) {
+          response += "I'm sorry you're feeling this way. Depression is a serious but treatable condition. Please know that you're not alone and help is available. Consider reaching out to our campus counselors, maintaining social connections, getting regular exercise and sunlight, and practicing self-care. If you're having thoughts of self-harm, please contact emergency services immediately.";
+        } else if (lowerMessage.includes('help') || lowerMessage.includes('support')) {
+          response += "I'm here to help and support you. You can explore our mental health resources, connect with peers in our support forum, book an appointment with a qualified counselor, or continue chatting with me. Remember, seeking help is a sign of strength, not weakness.";
+        } else if (lowerMessage.includes('exam') || lowerMessage.includes('study') || lowerMessage.includes('academic')) {
+          response += "Academic pressure is common but manageable. Try creating a study schedule, taking regular breaks, using active learning techniques, forming study groups, and maintaining work-life balance. Our counselors can also help with study strategies and academic stress management.";
+        } else if (lowerMessage.includes('sleep') || lowerMessage.includes('insomnia')) {
+          response += "Good sleep is essential for mental health. Try maintaining a regular sleep schedule, avoiding screens before bed, creating a relaxing bedtime routine, limiting caffeine, and keeping your bedroom cool and dark. If sleep problems persist, consider speaking with a counselor or healthcare provider.";
+        } else {
+          response += "Thank you for sharing with me. Remember that it's completely normal to have ups and downs, and seeking support shows strength. Our campus has many resources available including counselors, peer support groups, and wellness programs. Is there anything specific you'd like to talk about or any particular support you're looking for?";
+        }
+        
+        const chat = new Chat({
+          userId: decoded.userId,
+          message,
+          response
+        });
+        
+        await chat.save();
+        
+        return res.status(201).json(chat);
+        
+      } catch (error) {
+        console.error('Send chat message error:', error);
+        return res.status(500).json({ message: 'Server error during chat' });
+      }
+    }
+    
     // 404 for other routes
     return res.status(404).json({
       error: 'Not Found',
       url: url,
       message: 'Endpoint not found',
-      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/login', '/api/auth/profile', '/api/moods', '/api/counsellors', '/api/appointments', '/api/forum']
+      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/login', '/api/auth/profile', '/api/moods', '/api/counsellors', '/api/appointments', '/api/forum', '/api/chat']
     });
     
   } catch (error) {
