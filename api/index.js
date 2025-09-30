@@ -31,6 +31,24 @@ const AppointmentSchema = new mongoose.Schema({
   notes: { type: String }
 });
 
+// Forum Post Schema for Peer Support
+const ForumPostSchema = new mongoose.Schema({
+  authorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  title: { type: String, required: true },
+  content: { type: String, required: true },
+  category: { type: String, enum: ['general', 'anxiety', 'depression', 'stress', 'relationships', 'academic'], default: 'general' },
+  isAnonymous: { type: Boolean, default: false },
+  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  replies: [{
+    authorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    content: { type: String, required: true },
+    isAnonymous: { type: Boolean, default: false },
+    createdAt: { type: Date, default: Date.now }
+  }],
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
 // Hash password before saving
 UserSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
@@ -43,7 +61,7 @@ UserSchema.methods.comparePassword = async function(password) {
   return await bcrypt.compare(password, this.password);
 };
 
-let User, MoodLog, Appointment;
+let User, MoodLog, Appointment, ForumPost;
 let isConnected = false;
 
 const connectToDatabase = async () => {
@@ -58,6 +76,7 @@ const connectToDatabase = async () => {
       User = mongoose.models.User || mongoose.model('User', UserSchema);
       MoodLog = mongoose.models.MoodLog || mongoose.model('MoodLog', MoodLogSchema);
       Appointment = mongoose.models.Appointment || mongoose.model('Appointment', AppointmentSchema);
+      ForumPost = mongoose.models.ForumPost || mongoose.model('ForumPost', ForumPostSchema);
       
       isConnected = true;
       console.log('MongoDB Connected Successfully');
@@ -400,12 +419,122 @@ export default async function handler(req, res) {
       }
     }
     
+    // Forum endpoints (Peer Support)
+    
+    // Get all forum posts
+    if (url === '/api/forum' && method === 'GET') {
+      if (!isConnected || !ForumPost) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      try {
+        const posts = await ForumPost.find()
+          .populate('authorId', 'name')
+          .populate('replies.authorId', 'name')
+          .sort({ createdAt: -1 });
+        
+        return res.status(200).json(posts);
+        
+      } catch (error) {
+        console.error('Get forum posts error:', error);
+        return res.status(500).json({ message: 'Server error' });
+      }
+    }
+    
+    // Create forum post
+    if (url === '/api/forum' && method === 'POST') {
+      if (!isConnected || !ForumPost) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        const body = await parseBody(req);
+        const { title, content, category, isAnonymous } = body;
+        
+        if (!title || !content) {
+          return res.status(400).json({ message: 'Title and content are required' });
+        }
+        
+        const post = new ForumPost({
+          authorId: decoded.userId,
+          title,
+          content,
+          category: category || 'general',
+          isAnonymous: isAnonymous || false
+        });
+        
+        await post.save();
+        await post.populate('authorId', 'name');
+        
+        return res.status(201).json(post);
+        
+      } catch (error) {
+        console.error('Create forum post error:', error);
+        return res.status(401).json({ message: 'Invalid token' });
+      }
+    }
+    
+    // Add reply to forum post
+    if (url.startsWith('/api/forum/') && url.includes('/reply') && method === 'POST') {
+      if (!isConnected || !ForumPost) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      const postId = url.split('/')[3]; // Extract post ID from URL
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        const body = await parseBody(req);
+        const { content, isAnonymous } = body;
+        
+        if (!content) {
+          return res.status(400).json({ message: 'Content is required' });
+        }
+        
+        const post = await ForumPost.findById(postId);
+        if (!post) {
+          return res.status(404).json({ message: 'Post not found' });
+        }
+        
+        const reply = {
+          authorId: decoded.userId,
+          content,
+          isAnonymous: isAnonymous || false,
+          createdAt: new Date()
+        };
+        
+        post.replies.push(reply);
+        await post.save();
+        await post.populate('replies.authorId', 'name');
+        
+        return res.status(201).json(post);
+        
+      } catch (error) {
+        console.error('Add reply error:', error);
+        return res.status(401).json({ message: 'Invalid token' });
+      }
+    }
+    
     // 404 for other routes
     return res.status(404).json({
       error: 'Not Found',
       url: url,
       message: 'Endpoint not found',
-      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/login', '/api/auth/profile', '/api/moods', '/api/counsellors', '/api/appointments']
+      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/login', '/api/auth/profile', '/api/moods', '/api/counsellors', '/api/appointments', '/api/forum']
     });
     
   } catch (error) {
