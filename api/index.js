@@ -38,6 +38,7 @@ const connectToDatabase = async () => {
   
   try {
     if (process.env.MONGO_URI) {
+      console.log('Attempting MongoDB connection...');
       await mongoose.connect(process.env.MONGO_URI, {
         useNewUrlParser: true,
         useUnifiedTopology: true,
@@ -47,10 +48,35 @@ const connectToDatabase = async () => {
       User = mongoose.models.User || mongoose.model('User', UserSchema);
       
       isConnected = true;
-      console.log('MongoDB Connected');
+      console.log('MongoDB Connected Successfully');
+      
+      // Create test user if not exists
+      await createTestUser();
+    } else {
+      console.log('MONGO_URI not found in environment variables');
     }
   } catch (err) {
     console.error('MongoDB connection error:', err);
+    isConnected = false;
+  }
+};
+
+// Create a test user for login
+const createTestUser = async () => {
+  try {
+    const existingUser = await User.findOne({ email: 'test@student.com' });
+    if (!existingUser) {
+      const testUser = new User({
+        email: 'test@student.com',
+        password: 'password123',
+        role: 'student',
+        name: 'Test Student'
+      });
+      await testUser.save();
+      console.log('Test user created: test@student.com / password123');
+    }
+  } catch (error) {
+    console.error('Error creating test user:', error);
   }
 };
 
@@ -86,10 +112,8 @@ export default async function handler(req, res) {
   const { url, method } = req;
   
   try {
-    // Connect to database for API routes
-    if (url.startsWith('/api/')) {
-      await connectToDatabase();
-    }
+    // Always try to connect to database
+    await connectToDatabase();
     
     // Root endpoint
     if (url === '/' || url === '') {
@@ -113,7 +137,6 @@ export default async function handler(req, res) {
           'GET /',
           'GET /api',
           'GET /api/health',
-          'POST /api/auth/register',
           'POST /api/auth/login',
           'GET /api/auth/profile'
         ]
@@ -132,6 +155,57 @@ export default async function handler(req, res) {
           nodeEnv: process.env.NODE_ENV
         }
       });
+    }
+    
+    // Auth register endpoint
+    if (url === '/api/auth/register' && method === 'POST') {
+      if (!isConnected || !User) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const body = await parseBody(req);
+      const { email, password, role = 'student', name } = body;
+      
+      if (!email || !password) {
+        return res.status(400).json({ message: 'Email and password are required' });
+      }
+      
+      try {
+        // Check if user already exists
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+          return res.status(400).json({ message: 'User already exists' });
+        }
+        
+        // Create new user
+        const newUser = new User({
+          email,
+          password,
+          role,
+          name
+        });
+        
+        await newUser.save();
+        
+        // Generate JWT token
+        const token = jwt.sign(
+          { userId: newUser._id, email: newUser.email, role: newUser.role },
+          process.env.JWT_SECRET || 'fallback-secret',
+          { expiresIn: '7d' }
+        );
+        
+        return res.status(201).json({
+          token,
+          _id: newUser._id,
+          email: newUser.email,
+          role: newUser.role,
+          name: newUser.name
+        });
+        
+      } catch (error) {
+        console.error('Register error:', error);
+        return res.status(500).json({ message: 'Server error during registration' });
+      }
     }
     
     // Auth register endpoint
@@ -266,7 +340,7 @@ export default async function handler(req, res) {
       error: 'Not Found',
       url: url,
       message: 'Endpoint not found',
-      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/register', '/api/auth/login', '/api/auth/profile']
+      availableEndpoints: ['/', '/api', '/api/health', '/api/auth/login', '/api/auth/profile']
     });
     
   } catch (error) {
