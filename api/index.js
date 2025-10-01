@@ -8,7 +8,31 @@ const UserSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   role: { type: String, enum: ['student', 'admin', 'counsellor'], default: 'student' },
-  name: { type: String }
+  name: { type: String },
+  phone: { type: String },
+  campus: { type: String },
+  // Counsellor specific fields
+  languages: [{ type: String }],
+  specialization: [{ type: String }],
+  location: { type: String },
+  availableDays: [{ type: String }],
+  availableHours: { type: String },
+  // Gamification fields
+  points: { type: Number, default: 0 },
+  streakCount: { type: Number, default: 0 },
+  lastMoodLogDate: { type: Date }
+});
+
+// Gamification Schema
+const GamificationSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  points: { type: Number, default: 0 },
+  streakCount: { type: Number, default: 0 },
+  lastActivityDate: { type: Date },
+  achievements: [{ type: String }],
+  level: { type: Number, default: 1 },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
 });
 
 // Mood Log Schema
@@ -36,7 +60,7 @@ const ForumPostSchema = new mongoose.Schema({
   authorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   title: { type: String, required: true },
   content: { type: String, required: true },
-  category: { type: String, enum: ['general', 'anxiety', 'depression', 'stress', 'relationships', 'academic'], default: 'general' },
+  category: { type: String, default: 'general' }, // Removed enum restriction for flexibility
   isAnonymous: { type: Boolean, default: false },
   likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   replies: [{
@@ -45,6 +69,7 @@ const ForumPostSchema = new mongoose.Schema({
     isAnonymous: { type: Boolean, default: false },
     createdAt: { type: Date, default: Date.now }
   }],
+  tags: [{ type: String }], // Added tags support
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -69,7 +94,7 @@ UserSchema.methods.comparePassword = async function(password) {
   return await bcrypt.compare(password, this.password);
 };
 
-let User, MoodLog, Appointment, ForumPost, Chat;
+let User, MoodLog, Appointment, ForumPost, Chat, Gamification;
 let isConnected = false;
 
 const connectToDatabase = async () => {
@@ -86,6 +111,7 @@ const connectToDatabase = async () => {
       Appointment = mongoose.models.Appointment || mongoose.model('Appointment', AppointmentSchema);
       ForumPost = mongoose.models.ForumPost || mongoose.model('ForumPost', ForumPostSchema);
       Chat = mongoose.models.Chat || mongoose.model('Chat', ChatSchema);
+      Gamification = mongoose.models.Gamification || mongoose.model('Gamification', GamificationSchema);
       
       isConnected = true;
       console.log('MongoDB Connected Successfully');
@@ -313,7 +339,8 @@ export default async function handler(req, res) {
         return res.status(401).json({ message: 'No token provided' });
       }
       
-      const token = authHeader.split(' ')[1];
+      // Handle both "Bearer TOKEN" and just "TOKEN" formats
+      const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
       
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
@@ -334,7 +361,78 @@ export default async function handler(req, res) {
         });
         
         await moodLog.save();
-        return res.status(201).json(moodLog);
+        console.log('Mood log saved successfully:', moodLog._id);
+        
+        // Calculate updated streak and points after saving
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        
+        const userMoods = await MoodLog.find({ 
+          userId: decoded.userId,
+          timestamp: { $gte: sevenDaysAgo }
+        }).sort({ timestamp: -1 });
+        
+        // Calculate streak
+        const moodsByDate = {};
+        userMoods.forEach(mood => {
+          const date = mood.timestamp.toISOString().split('T')[0];
+          if (!moodsByDate[date]) {
+            moodsByDate[date] = [];
+          }
+          moodsByDate[date].push(mood.intensity);
+        });
+        
+        let streakCount = 0;
+        const today = new Date();
+        
+        for (let i = 0; i < 365; i++) {
+          const checkDate = new Date(today);
+          checkDate.setDate(today.getDate() - i);
+          const dateStr = checkDate.toISOString().split('T')[0];
+          
+          if (moodsByDate[dateStr] && moodsByDate[dateStr].length > 0) {
+            streakCount++;
+          } else if (i === 0) {
+            streakCount = 0;
+            break;
+          } else {
+            break;
+          }
+        }
+        
+        const totalMoods = userMoods.length;
+        const points = totalMoods * 10 + streakCount * 5;
+        
+        // Update User gamification data
+        await User.findByIdAndUpdate(decoded.userId, {
+          points: points,
+          streakCount: streakCount,
+          lastMoodLogDate: new Date()
+        });
+        
+        // Update or create Gamification record
+        await Gamification.findOneAndUpdate(
+          { userId: decoded.userId },
+          {
+            points: points,
+            streakCount: streakCount,
+            lastActivityDate: new Date(),
+            level: Math.floor(points / 100) + 1,
+            updatedAt: new Date()
+          },
+          { upsert: true, new: true }
+        );
+        
+        console.log('Gamification data updated:', { points, streakCount, userId: decoded.userId });
+        
+        return res.status(201).json({
+          ...moodLog.toObject(),
+          gamification: {
+            points: points,
+            streakCount: streakCount,
+            level: Math.floor(points / 100) + 1
+          }
+        });
         
       } catch (error) {
         console.error('Log mood error:', error);
@@ -402,7 +500,8 @@ export default async function handler(req, res) {
         return res.status(401).json({ message: 'No token provided' });
       }
       
-      const token = authHeader.split(' ')[1];
+      // Handle both "Bearer TOKEN" and just "TOKEN" formats
+      const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
       
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
@@ -449,7 +548,8 @@ export default async function handler(req, res) {
         return res.status(401).json({ message: 'No token provided' });
       }
       
-      const token = authHeader.split(' ')[1];
+      // Handle both "Bearer TOKEN" and just "TOKEN" formats
+      const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
       
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
@@ -498,12 +598,15 @@ export default async function handler(req, res) {
         return res.status(401).json({ message: 'No token provided' });
       }
       
-      const token = authHeader.split(' ')[1];
+      // Handle both "Bearer TOKEN" and just "TOKEN" formats
+      const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
       
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
         const body = await parseBody(req);
-        const { title, content, category, isAnonymous } = body;
+        const { title, content, category, isAnonymous, tags } = body;
+        
+        console.log('Forum post creation request:', { title, content, category, isAnonymous, userId: decoded.userId });
         
         if (!title || !content) {
           return res.status(400).json({ message: 'Title and content are required' });
@@ -514,17 +617,59 @@ export default async function handler(req, res) {
           title,
           content,
           category: category || 'general',
-          isAnonymous: isAnonymous || false
+          isAnonymous: isAnonymous || false,
+          tags: tags ? tags.split(',').map(t => t.trim()).filter(Boolean) : []
         });
         
         await post.save();
-        await post.populate('authorId', 'name');
+        console.log('Forum post saved successfully:', post._id);
+        await post.populate('authorId', 'name email');
         
         return res.status(201).json(post);
         
       } catch (error) {
         console.error('Create forum post error:', error);
-        return res.status(401).json({ message: 'Invalid token' });
+        return res.status(500).json({ message: 'Server error creating post', error: error.message });
+      }
+    }
+    
+    // Delete forum post
+    if (url.startsWith('/api/forum/') && !url.includes('/reply') && method === 'DELETE') {
+      if (!isConnected || !ForumPost) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      // Handle both "Bearer TOKEN" and just "TOKEN" formats
+      const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
+      const postId = url.split('/')[3]; // Extract post ID from URL
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        
+        // Find the post
+        const post = await ForumPost.findById(postId);
+        if (!post) {
+          return res.status(404).json({ message: 'Post not found' });
+        }
+        
+        // Check if user is the author of the post
+        if (post.authorId.toString() !== decoded.userId) {
+          return res.status(403).json({ message: 'You can only delete your own posts' });
+        }
+        
+        await ForumPost.findByIdAndDelete(postId);
+        console.log('Forum post deleted successfully:', postId);
+        
+        return res.status(200).json({ message: 'Post deleted successfully' });
+        
+      } catch (error) {
+        console.error('Delete forum post error:', error);
+        return res.status(500).json({ message: 'Server error deleting post', error: error.message });
       }
     }
     
@@ -539,7 +684,8 @@ export default async function handler(req, res) {
         return res.status(401).json({ message: 'No token provided' });
       }
       
-      const token = authHeader.split(' ')[1];
+      // Handle both "Bearer TOKEN" and just "TOKEN" formats
+      const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
       const postId = url.split('/')[3]; // Extract post ID from URL
       
       try {
@@ -565,9 +711,13 @@ export default async function handler(req, res) {
         
         post.replies.push(reply);
         await post.save();
-        await post.populate('replies.authorId', 'name');
         
-        return res.status(201).json(post);
+        // Populate the new reply's author info
+        await post.populate('replies.authorId', 'name email');
+        
+        // Return just the new reply, not the entire post
+        const newReply = post.replies[post.replies.length - 1];
+        return res.status(201).json(newReply);
         
       } catch (error) {
         console.error('Add reply error:', error);
@@ -719,13 +869,34 @@ export default async function handler(req, res) {
           });
         }
         
+        // Calculate proper streak (consecutive days)
+        let streakCount = 0;
+        const today = new Date();
+        
+        for (let i = 0; i < 365; i++) { // Check up to 365 days back
+          const checkDate = new Date(today);
+          checkDate.setDate(today.getDate() - i);
+          const dateStr = checkDate.toISOString().split('T')[0];
+          
+          if (moodsByDate[dateStr] && moodsByDate[dateStr].length > 0) {
+            streakCount++;
+          } else if (i === 0) {
+            // If no mood today, streak is 0
+            streakCount = 0;
+            break;
+          } else {
+            // Break streak if missing day
+            break;
+          }
+        }
+        
         const totalMoods = moods.length;
         const averageMood = totalMoods > 0 ? moods.reduce((sum, m) => sum + m.intensity, 0) / totalMoods : 0;
         
         return res.status(200).json({
           history7d,
-          points: totalMoods * 10, // 10 points per mood log
-          streakCount: Math.min(totalMoods, 7), // Simplified streak calculation
+          points: totalMoods * 10 + streakCount * 5, // 10 points per mood log + 5 bonus per streak day
+          streakCount: streakCount,
           averageMood: Math.round(averageMood * 10) / 10
         });
         
@@ -746,7 +917,8 @@ export default async function handler(req, res) {
         return res.status(401).json({ message: 'No token provided' });
       }
       
-      const token = authHeader.split(' ')[1];
+      // Handle both "Bearer TOKEN" and just "TOKEN" formats
+      const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
       
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
@@ -754,7 +926,37 @@ export default async function handler(req, res) {
         const appointments = await Appointment.find({ studentId: decoded.userId })
           .sort({ date: -1 });
         
-        return res.status(200).json(appointments);
+        // Populate counsellor information for each appointment
+        const appointmentsWithCounsellors = await Promise.all(
+          appointments.map(async (appointment) => {
+            try {
+              // Find counsellor by counsellorId (which is an email)
+              const counsellor = await User.findOne({ email: appointment.counsellorId, role: 'counsellor' });
+              return {
+                ...appointment.toObject(),
+                counsellor: counsellor ? {
+                  _id: counsellor._id,
+                  email: counsellor.email,
+                  name: counsellor.name || counsellor.email.split('@')[0]
+                } : {
+                  email: appointment.counsellorId,
+                  name: appointment.counsellorName || 'Counsellor'
+                }
+              };
+            } catch (error) {
+              console.error('Error populating counsellor:', error);
+              return {
+                ...appointment.toObject(),
+                counsellor: {
+                  email: appointment.counsellorId,
+                  name: appointment.counsellorName || 'Counsellor'
+                }
+              };
+            }
+          })
+        );
+        
+        return res.status(200).json(appointmentsWithCounsellors);
         
       } catch (error) {
         console.error('Get appointments error:', error);
@@ -795,6 +997,42 @@ export default async function handler(req, res) {
         
       } catch (error) {
         console.error('Update appointment error:', error);
+        return res.status(500).json({ message: 'Server error' });
+      }
+    }
+    
+    // Delete appointment endpoint
+    if (url.startsWith('/api/appointments/') && !url.includes('/status') && !url.includes('/me') && method === 'DELETE') {
+      if (!isConnected || !Appointment) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ message: 'No token provided' });
+      }
+      
+      // Handle both "Bearer TOKEN" and just "TOKEN" formats
+      const token = authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : authHeader;
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+        const appointmentId = url.split('/')[3]; // Extract ID from URL like /api/appointments/123
+        
+        // Find and delete the appointment, but only if it belongs to the requesting user
+        const appointment = await Appointment.findOneAndDelete({
+          _id: appointmentId,
+          studentId: decoded.userId
+        });
+        
+        if (!appointment) {
+          return res.status(404).json({ message: 'Appointment not found or not authorized' });
+        }
+        
+        return res.status(200).json({ message: 'Appointment cancelled successfully' });
+        
+      } catch (error) {
+        console.error('Delete appointment error:', error);
         return res.status(500).json({ message: 'Server error' });
       }
     }
