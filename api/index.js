@@ -346,24 +346,49 @@ export default async function handler(req, res) {
       }
     }
     
-    // Simple counsellors endpoint (mock data for now)
+    // Get counsellors endpoint
     if (url === '/api/counsellors' && method === 'GET') {
-      return res.status(200).json([
-        { 
-          _id: '1', 
-          name: 'Dr. Sarah Johnson', 
-          specialization: ['Anxiety', 'Depression'], 
-          languages: ['English', 'Hindi'],
-          availableDays: ['Monday', 'Wednesday', 'Friday']
-        },
-        { 
-          _id: '2', 
-          name: 'Dr. Rajesh Kumar', 
-          specialization: ['Stress Management', 'Academic Pressure'], 
-          languages: ['English', 'Hindi', 'Tamil'],
-          availableDays: ['Tuesday', 'Thursday', 'Saturday']
-        }
-      ]);
+      if (!isConnected || !User) {
+        return res.status(500).json({ message: 'Database not connected' });
+      }
+      
+      try {
+        // Fetch real counsellors from database
+        const counsellors = await User.find({ role: 'counsellor' }).select('-password');
+        
+        // Format for frontend compatibility and group by specialization
+        const formattedCounsellors = counsellors.map(counsellor => ({
+          id: counsellor._id.toString(),
+          _id: counsellor._id.toString(),
+          name: counsellor.name,
+          email: counsellor.email,
+          phone: counsellor.phone,
+          specialization: counsellor.specialization || ['General Counseling'],
+          languages: counsellor.languages || ['English'],
+          availableDays: counsellor.availableDays || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+          availableHours: counsellor.availableHours || '9:00 AM - 5:00 PM',
+          location: counsellor.location || 'Student Counseling Center',
+          campus: counsellor.campus || 'Main Campus'
+        }));
+
+        // Group counsellors by their primary specialization for categorization
+        const categorizedCounsellors = {
+          'Anxiety Disorders': formattedCounsellors.filter(c => c.specialization.some(s => s.includes('Anxiety'))),
+          'Depression': formattedCounsellors.filter(c => c.specialization.some(s => s.includes('Depression') || s.includes('Crisis'))),
+          'Academic Stress': formattedCounsellors.filter(c => c.specialization.some(s => s.includes('Academic') || s.includes('Study') || s.includes('Exam'))),
+          'Peer Support': formattedCounsellors.filter(c => c.specialization.some(s => s.includes('Peer') || s.includes('Social') || s.includes('Homesickness'))),
+          'General': formattedCounsellors.filter(c => !c.specialization.some(s => s.includes('Anxiety') || s.includes('Depression') || s.includes('Academic') || s.includes('Peer') || s.includes('Crisis') || s.includes('Study') || s.includes('Exam') || s.includes('Social') || s.includes('Homesickness')))
+        };
+        
+        return res.status(200).json({
+          all: formattedCounsellors,
+          categories: categorizedCounsellors
+        });
+        
+      } catch (error) {
+        console.error('Get counsellors error:', error);
+        return res.status(500).json({ message: 'Server error fetching counsellors' });
+      }
     }
     
     // Book appointment endpoint
