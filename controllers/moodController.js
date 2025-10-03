@@ -7,23 +7,72 @@ exports.createMood = async (req, res) => {
     if (!mood) return res.status(400).json({ message: 'mood required' });
     const log = await MoodLog.create({ student: req.user._id, mood, score, source: source || 'self' });
 
-    // Gamification: daily check-in points and streak
-    const today = new Date().toISOString().split('T')[0];
+    // Calculate proper streak based on consecutive days with mood logs
+    const userMoods = await MoodLog.find({ 
+      student: req.user._id 
+    }).sort({ createdAt: -1 });
+    
+    // Group moods by date
+    const moodsByDate = {};
+    userMoods.forEach(moodLog => {
+      const date = moodLog.createdAt.toISOString().split('T')[0];
+      if (!moodsByDate[date]) {
+        moodsByDate[date] = [];
+      }
+      moodsByDate[date].push(moodLog);
+    });
+    
+    // Calculate consecutive streak from today backwards
+    let streakCount = 0;
+    const today = new Date();
+    
+    for (let i = 0; i < 365; i++) {
+      const checkDate = new Date(today);
+      checkDate.setDate(today.getDate() - i);
+      const dateStr = checkDate.toISOString().split('T')[0];
+      
+      if (moodsByDate[dateStr] && moodsByDate[dateStr].length > 0) {
+        streakCount++;
+      } else {
+        break; // Break streak if no mood logged on this day
+      }
+    }
+
+    // Update or create gamification record
+    const todayStr = new Date().toISOString().split('T')[0];
     let gam = await Gamification.findOne({ student: req.user._id });
+    
     if (!gam) {
-      gam = await Gamification.create({ student: req.user._id, points: 10, streakCount: 1, lastCheckInDate: today, badges: [] });
-    } else if (gam.lastCheckInDate !== today) {
-      const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString().split('T')[0];
-      const continued = gam.lastCheckInDate === yesterday;
-      gam.streakCount = continued ? gam.streakCount + 1 : 1;
-      gam.points += 10;
-      if (gam.streakCount === 7 && !gam.badges.includes('7-day-streak')) gam.badges.push('7-day-streak');
-      gam.lastCheckInDate = today;
+      gam = await Gamification.create({ 
+        student: req.user._id, 
+        points: 10, 
+        streakCount: streakCount, 
+        lastCheckInDate: todayStr, 
+        badges: [] 
+      });
+    } else {
+      // Always recalculate points and streak
+      const totalMoods = userMoods.length;
+      const newPoints = totalMoods * 10 + streakCount * 5;
+      
+      gam.points = newPoints;
+      gam.streakCount = streakCount;
+      gam.lastCheckInDate = todayStr;
+      
+      // Award badges based on streak
+      if (streakCount >= 7 && !gam.badges.includes('7-day-streak')) {
+        gam.badges.push('7-day-streak');
+      }
+      if (streakCount >= 30 && !gam.badges.includes('30-day-streak')) {
+        gam.badges.push('30-day-streak');
+      }
+      
       await gam.save();
     }
 
     res.status(201).json({ log, gamification: gam });
   } catch (e) {
+    console.error('Create mood error:', e);
     res.status(500).json({ message: 'Server Error' });
   }
 };

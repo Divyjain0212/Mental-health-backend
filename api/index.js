@@ -372,7 +372,7 @@ export default async function handler(req, res) {
           timestamp: { $gte: sevenDaysAgo }
         }).sort({ timestamp: -1 });
         
-        // Calculate streak
+        // Calculate streak - consecutive days with mood logs (including today if logged today)
         const moodsByDate = {};
         userMoods.forEach(mood => {
           const date = mood.timestamp.toISOString().split('T')[0];
@@ -384,7 +384,9 @@ export default async function handler(req, res) {
         
         let streakCount = 0;
         const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
         
+        // Start checking from today backwards
         for (let i = 0; i < 365; i++) {
           const checkDate = new Date(today);
           checkDate.setDate(today.getDate() - i);
@@ -392,10 +394,8 @@ export default async function handler(req, res) {
           
           if (moodsByDate[dateStr] && moodsByDate[dateStr].length > 0) {
             streakCount++;
-          } else if (i === 0) {
-            streakCount = 0;
-            break;
           } else {
+            // Break the streak - no consecutive days
             break;
           }
         }
@@ -869,10 +869,11 @@ export default async function handler(req, res) {
           });
         }
         
-        // Calculate proper streak (consecutive days)
+        // Calculate proper streak (consecutive days with mood logs)
         let streakCount = 0;
         const today = new Date();
         
+        // Start checking from today backwards for consecutive days
         for (let i = 0; i < 365; i++) { // Check up to 365 days back
           const checkDate = new Date(today);
           checkDate.setDate(today.getDate() - i);
@@ -880,12 +881,8 @@ export default async function handler(req, res) {
           
           if (moodsByDate[dateStr] && moodsByDate[dateStr].length > 0) {
             streakCount++;
-          } else if (i === 0) {
-            // If no mood today, streak is 0
-            streakCount = 0;
-            break;
           } else {
-            // Break streak if missing day
+            // Break streak if missing day (no mood logged)
             break;
           }
         }
